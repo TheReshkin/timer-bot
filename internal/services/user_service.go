@@ -1,8 +1,8 @@
 package services
 
 import (
-	"github.com/TheReshkin/tg-bot-family/internal/models"
-	"github.com/TheReshkin/tg-bot-family/internal/storage"
+	"github.com/TheReshkin/timer-bot/internal/models"
+	"github.com/TheReshkin/timer-bot/internal/storage"
 	"go.uber.org/zap"
 )
 

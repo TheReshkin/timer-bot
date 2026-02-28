@@ -6,8 +6,8 @@ import (
 	"os"
 	"sync"
 
-	"github.com/TheReshkin/tg-bot-family/internal/config"
-	"github.com/TheReshkin/tg-bot-family/internal/models"
+	"github.com/TheReshkin/timer-bot/internal/config"
+	"github.com/TheReshkin/timer-bot/internal/models"
 )
 
 const eventsFile = "./data/events.json"

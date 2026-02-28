@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/TheReshkin/tg-bot-family/internal/models"
+	"github.com/TheReshkin/timer-bot/internal/models"
 )
 
 func TestIsValidDate(t *testing.T) {

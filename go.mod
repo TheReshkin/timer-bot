@@ -1,4 +1,4 @@
-module github.com/TheReshkin/tg-bot-family
+module github.com/TheReshkin/timer-bot
 
 go 1.23.2
 

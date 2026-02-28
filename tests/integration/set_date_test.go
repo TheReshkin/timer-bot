@@ -3,7 +3,7 @@ package integration
 import (
 	"testing"
 
-	"github.com/TheReshkin/tg-bot-family/internal/models"
+	"github.com/TheReshkin/timer-bot/internal/models"
 )
 
 func TestSetDateIntegration(t *testing.T) {

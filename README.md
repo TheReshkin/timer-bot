@@ -38,8 +38,8 @@
 
 1. Клонируйте репозиторий:
    ```bash
-   git clone https://github.com/TheReshkin/tg-bot-family.git
-   cd tg-bot-family
+   git clone https://github.com/TheReshkin/timer-bot.git
+   cd timer-bot
    ```
 
 2. Установите зависимости:
