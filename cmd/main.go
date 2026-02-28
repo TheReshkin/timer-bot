@@ -62,6 +62,9 @@ func main() {
 		handleHelp(ctx, b, update)
 	})
 
+	// Обработчик callback query для inline-календаря
+	b.RegisterHandler(bot.HandlerTypeCallbackQueryData, "cal:", bot.MatchTypePrefix, handleCalendarCallback)
+
 	// Обработчик для динамических команд — регистрируем последним
 	b.RegisterHandler(bot.HandlerTypeMessageText, "/", bot.MatchTypePrefix, func(ctx context.Context, b *bot.Bot, update *tgmodels.Update) {
 		handleDynamicOrUnknown(ctx, b, update)
@@ -97,6 +100,14 @@ func parseEventDate(s string) (time.Time, error) {
 	return time.Time{}, fmt.Errorf("неизвестный формат даты: %s", s)
 }
 
+// looksLikeDate проверяет, похожа ли строка на дату (начинается с цифры).
+func looksLikeDate(s string) bool {
+	if len(s) == 0 {
+		return false
+	}
+	return s[0] >= '0' && s[0] <= '9'
+}
+
 func sendMessage(ctx context.Context, b *bot.Bot, chatID int64, text string) {
 	_, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID: chatID,
@@ -119,9 +130,34 @@ func handleSetDate(ctx context.Context, b *bot.Bot, update *tgmodels.Update) {
 	}
 
 	parts := strings.Fields(command)
+	chatID := update.Message.Chat.ID
+	userID := update.Message.From.ID
+
+	// Режим 1: /set_date <name> [description] → интерактивный календарь
+	if len(parts) >= 2 && !looksLikeDate(parts[1]) {
+		name := parts[1]
+		description := ""
+		if len(parts) > 2 {
+			description = strings.Join(parts[2:], " ")
+		}
+
+		setPending(chatID, userID, &pendingEvent{
+			Name:        name,
+			Description: description,
+			ChatID:      chatID,
+			UserID:      userID,
+		})
+
+		now := time.Now()
+		sendCalendar(ctx, b, chatID, name, now.Year(), now.Month())
+		return
+	}
+
+	// Режим 2: /set_date <date> [time] <name> [description] → прямое создание
 	if len(parts) < 3 {
-		sendMessage(ctx, b, update.Message.Chat.ID,
+		sendMessage(ctx, b, chatID,
 			"Используйте формат:\n"+
+				"/set_date event_name [description] — интерактивный календарь\n"+
 				"/set_date YYYY-MM-DD HH:MM event_name [description]\n"+
 				"/set_date YYYY-MM-DD event_name [description]\n"+
 				"/set_date DD.MM.YYYY event_name [description]")
@@ -148,25 +184,25 @@ func handleSetDate(ctx context.Context, b *bot.Bot, update *tgmodels.Update) {
 	// Валидация даты
 	parsedDate, err := parseEventDate(dateStr)
 	if err != nil {
-		sendMessage(ctx, b, update.Message.Chat.ID, fmt.Sprintf("Ошибка парсинга даты: %s", err))
+		sendMessage(ctx, b, chatID, fmt.Sprintf("Ошибка парсинга даты: %s", err))
 		return
 	}
 	formattedDate := parsedDate.Format("2006-01-02 15:04")
 
 	// Создание события в БД
-	if err := store.CreateEvent(ctx, update.Message.Chat.ID, name, formattedDate, description); err != nil {
-		sendMessage(ctx, b, update.Message.Chat.ID, fmt.Sprintf("Ошибка: %s", err))
+	if err := store.CreateEvent(ctx, chatID, name, formattedDate, description); err != nil {
+		sendMessage(ctx, b, chatID, fmt.Sprintf("Ошибка: %s", err))
 		return
 	}
 
 	// Привязка события к пользователю
-	event, err := store.GetEvent(ctx, update.Message.Chat.ID, name)
+	event, err := store.GetEvent(ctx, chatID, name)
 	if err == nil && event != nil {
-		_ = store.AddEventToUser(ctx, update.Message.Chat.ID, update.Message.From.ID, event.ID)
+		_ = store.AddEventToUser(ctx, chatID, userID, event.ID)
 	}
 
-	logger.Infof("Событие создано: %s (chat_id=%d)", name, update.Message.Chat.ID)
-	sendMessage(ctx, b, update.Message.Chat.ID,
+	logger.Infof("Событие создано: %s (chat_id=%d)", name, chatID)
+	sendMessage(ctx, b, chatID,
 		fmt.Sprintf("Событие '%s' добавлено! Используйте /%s для информации.", name, name))
 }
 
@@ -303,9 +339,9 @@ func handleHelp(ctx context.Context, b *bot.Bot, update *tgmodels.Update) {
 	}
 
 	helpText := `Команды:
-/set_date YYYY-MM-DD HH:MM event_name [description] — добавить событие с временем
-/set_date YYYY-MM-DD event_name [description] — добавить событие (время 00:00)
-/set_date DD.MM.YYYY event_name [description] — добавить событие (формат DD.MM)
+/set_date event_name [description] — добавить событие (📅 календарь)
+/set_date YYYY-MM-DD event_name [description] — добавить событие напрямую
+/set_date YYYY-MM-DD HH:MM event_name [description] — с указанием времени
 /list — список всех событий
 /active — активные события
 /outdated — устаревшие события
