@@ -16,6 +16,64 @@ import (
 // store — глобальная ссылка на PostgreSQL хранилище
 var store *storage.PostgresStorage
 
+// handleEditedMessage обрабатывает отредактированные сообщения,
+// перенаправляя их в соответствующие обработчики команд.
+// Также обрабатывает обычные сообщения от пользователей в режиме ожидания ввода.
+func handleEditedMessage(ctx context.Context, b *bot.Bot, update *tgmodels.Update) {
+	// Обработка обычных сообщений, не пойманных зарегистрированными обработчиками
+	// (например, ввод названия события после /set_date)
+	if update.Message != nil && update.EditedMessage == nil {
+		text := update.Message.Text
+		if text == "" {
+			return
+		}
+		chatID := update.Message.Chat.ID
+		userID := update.Message.From.ID
+		if isAwaitingName(chatID, userID) {
+			handleEventNameReply(ctx, b, update)
+		}
+		return
+	}
+
+	if update.EditedMessage == nil {
+		return
+	}
+	logger.Debugf("Обработка отредактированного сообщения (chat_id=%d): %s",
+		update.EditedMessage.Chat.ID, update.EditedMessage.Text)
+
+	// Подменяем Message, чтобы обработчики работали как обычно
+	update.Message = update.EditedMessage
+
+	text := update.Message.Text
+	if text == "" {
+		return
+	}
+
+	// Проверяем, ожидает ли пользователь ввод названия события
+	chatID := update.Message.Chat.ID
+	userID := update.Message.From.ID
+	if isAwaitingName(chatID, userID) {
+		handleEventNameReply(ctx, b, update)
+		return
+	}
+
+	cmd := normalizeCommand(text)
+	switch {
+	case strings.HasPrefix(cmd, "/set_date"):
+		handleSetDate(ctx, b, update)
+	case cmd == "/list" || cmd == "/all":
+		handleList(ctx, b, update)
+	case cmd == "/active":
+		handleActive(ctx, b, update)
+	case cmd == "/outdated":
+		handleOutdated(ctx, b, update)
+	case cmd == "/help":
+		handleHelp(ctx, b, update)
+	case strings.HasPrefix(cmd, "/"):
+		handleDynamicOrUnknown(ctx, b, update)
+	}
+}
+
 func main() {
 	// Загрузка конфигурации (читает .env внутри)
 	cfg := config.LoadConfig()
@@ -29,8 +87,11 @@ func main() {
 	defer store.Close()
 	logger.Info("PostgreSQL подключён")
 
-	// Инициализация бота
-	b, err := bot.New(cfg.Token)
+	// Инициализация бота с default handler для отредактированных сообщений
+	b, err := bot.New(cfg.Token,
+		bot.WithAllowedUpdates(bot.AllowedUpdates{"message", "edited_message", "callback_query"}),
+		bot.WithDefaultHandler(handleEditedMessage),
+	)
 	if err != nil {
 		logger.Fatalf("Ошибка создания бота: %v", err)
 	}
@@ -133,6 +194,13 @@ func handleSetDate(ctx context.Context, b *bot.Bot, update *tgmodels.Update) {
 	chatID := update.Message.Chat.ID
 	userID := update.Message.From.ID
 
+	// Режим 0: /set_date (без аргументов) → запрос названия события
+	if len(parts) == 1 {
+		setAwaitingName(chatID, userID)
+		sendMessage(ctx, b, chatID, "📝 Введите название события:")
+		return
+	}
+
 	// Режим 1: /set_date <name> [description] → интерактивный календарь
 	if len(parts) >= 2 && !looksLikeDate(parts[1]) {
 		name := parts[1]
@@ -146,6 +214,7 @@ func handleSetDate(ctx context.Context, b *bot.Bot, update *tgmodels.Update) {
 			Description: description,
 			ChatID:      chatID,
 			UserID:      userID,
+			Hour:        -1,
 		})
 
 		now := time.Now()
@@ -204,6 +273,52 @@ func handleSetDate(ctx context.Context, b *bot.Bot, update *tgmodels.Update) {
 	logger.Infof("Событие создано: %s (chat_id=%d)", name, chatID)
 	sendMessage(ctx, b, chatID,
 		fmt.Sprintf("Событие '%s' добавлено! Используйте /%s для информации.", name, name))
+}
+
+// handleEventNameReply обрабатывает текстовый ввод названия события
+// после того, как пользователь вызвал /set_date без аргументов.
+func handleEventNameReply(ctx context.Context, b *bot.Bot, update *tgmodels.Update) {
+	if update.Message == nil {
+		return
+	}
+
+	chatID := update.Message.Chat.ID
+	userID := update.Message.From.ID
+	text := strings.TrimSpace(update.Message.Text)
+
+	// Если пользователь передумал
+	if text == "" || text == "/cancel" {
+		clearAwaitingName(chatID, userID)
+		sendMessage(ctx, b, chatID, "❌ Создание события отменено.")
+		return
+	}
+
+	// Если ввели другую команду — сбрасываем ожидание
+	if strings.HasPrefix(text, "/") {
+		clearAwaitingName(chatID, userID)
+		return
+	}
+
+	clearAwaitingName(chatID, userID)
+
+	// Первое слово — название, остальное — описание
+	parts := strings.Fields(text)
+	name := parts[0]
+	description := ""
+	if len(parts) > 1 {
+		description = strings.Join(parts[1:], " ")
+	}
+
+	setPending(chatID, userID, &pendingEvent{
+		Name:        name,
+		Description: description,
+		ChatID:      chatID,
+		UserID:      userID,
+		Hour:        -1,
+	})
+
+	now := time.Now()
+	sendCalendar(ctx, b, chatID, name, now.Year(), now.Month())
 }
 
 func handleList(ctx context.Context, b *bot.Bot, update *tgmodels.Update) {
@@ -428,12 +543,15 @@ func handleDynamicCommand(ctx context.Context, b *bot.Bot, update *tgmodels.Upda
 // ──────────────────────────── bootstrap ────────────────────────────
 
 func loadExistingCommands(b *bot.Bot) {
+	// Удаляем старые команды, чтобы Telegram точно обновил меню
+	b.DeleteMyCommands(context.Background(), &bot.DeleteMyCommandsParams{})
+
 	commands := []tgmodels.BotCommand{
-		{Command: "set_date", Description: "Добавить событие"},
-		{Command: "list", Description: "Список событий"},
-		{Command: "active", Description: "Активные события"},
-		{Command: "outdated", Description: "Устаревшие события"},
-		{Command: "help", Description: "Справка"},
+		{Command: "set_date", Description: "📅 Добавить событие (календарь или дата)"},
+		{Command: "list", Description: "📋 Список всех событий"},
+		{Command: "active", Description: "✅ Активные события"},
+		{Command: "outdated", Description: "⏰ Устаревшие события"},
+		{Command: "help", Description: "❓ Справка по командам"},
 	}
 
 	_, err := b.SetMyCommands(context.Background(), &bot.SetMyCommandsParams{
