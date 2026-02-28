@@ -2,3 +2,6 @@
 .vscode
 data/*
 tg-bot
+*.exe
+data
+postgres_data
