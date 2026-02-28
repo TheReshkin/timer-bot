@@ -1,0 +1,44 @@
+
+services:
+  murmansk-bot-dev:
+    # image: reshkin/murmansk-bot:dev
+    build:
+      context: .
+      dockerfile: Dockerfile    
+    container_name: murmansk-bot-dev
+    restart: always
+    volumes:
+      - .env:/app/.env
+      - ./data/:/app/data/
+    networks:
+      - bot-network
+    labels:
+      - "com.centurylinklabs.watchtower.enable=true"
+
+  # watchtower:
+  #   image: containrrr/watchtower
+  #   container_name: watchtower-tg-bot-dev
+  #   depends_on:
+  #     - murmansk-bot-dev
+  #   restart: always
+  #   volumes:
+  #     - /var/run/docker.sock:/var/run/docker.sock
+  #   environment:
+  #     - WATCHTOWER_POLL_INTERVAL=30 # Интервал проверки обновлений (в секундах)
+  #   command: --cleanup --label-enable # Удаляет старые образы и обновляет только контейнеры с метками
+  postgres:
+    image: postgres:15
+    container_name: timer-bot-postgres
+    restart: always
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: timer_bot_db
+    volumes:
+      - ./postgres_data:/var/lib/postgresql/data/
+    networks:
+      - bot-network
+
+networks:
+  bot-network:
+    driver: bridge
